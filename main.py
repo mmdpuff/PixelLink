@@ -6,7 +6,21 @@ from machine import Pin, I2C
 
 SERVICE_UUID = bluetooth.UUID("7b100000-8a2f-4d91-b6c3-5e8f2a1d0001")
 READ_OLED_UUID = bluetooth.UUID("7b100000-8a2f-4d91-b6c3-5e8f2a1d0002")
-WRITE_TEXT_OLED_UUID = bluetooth.UUID("7b100000-8a2f-4d91-b6c3-5e8f2a1d0002")
+WRITE_TEXT_OLED_UUID = bluetooth.UUID("7b100000-8a2f-4d91-b6c3-5e8f2a1d0003")
+
+# ================= COMMANDS =================
+
+ADD_TEXT = 0x01
+
+# Vertical alignment
+TOP = 0x00
+CENTER_V = 0x01
+BOTTOM = 0x02
+
+# Horizontal alignment
+LEFT = 0x00
+CENTER_H = 0x01
+RIGHT = 0x02
 
 Service = aioble.Service(SERVICE_UUID)
 
@@ -74,18 +88,85 @@ def compress_oled(oled):
 READ_CHARACTERISTIC.write(compress_oled(oled))
 
 
-async def handle_write(connection, data):
-    global oled
-
+async def draw_text(text, vertical, horizontal):
     oled.fill(0)
-    try:
-        oled.text(data.decode(), 0, 0)
-    except:
-        oled.text("hello", 0, 0)
-    print("Received:", data)
-    oled.show()
+    text_width = len(text) * 8
+    text_height = 8
 
+    # Horizontal position
+    if horizontal == LEFT:
+        x = 0
+
+    elif horizontal == CENTER_H:
+        x = (128 - text_width) // 2
+
+    elif horizontal == RIGHT:
+        x = 128 - text_width
+
+    else:
+        return
+
+    # Vertical position
+    if vertical == TOP:
+        y = 0
+
+    elif vertical == CENTER_V:
+        y = (64 - text_height) // 2
+
+    elif vertical == BOTTOM:
+        y = 64 - text_height
+
+    else:
+        return
+
+    oled.text(text, x, y)
+    oled.show()
     await asyncio.sleep_ms(0)
+
+
+async def handle_packet(data):
+    try:
+
+        # Minimum header size = 4 bytes
+        if len(data) < 4:
+            print("Invalid packet")
+            return
+
+        command = data[0]
+        vertical = data[1]
+        horizontal = data[2]
+        text_length = data[3]
+
+        # Validate command
+        if command != ADD_TEXT:
+            print("Unknown command")
+            return
+
+        # Validate alignment
+        if vertical not in (TOP, CENTER_V, BOTTOM):
+            print("Invalid vertical alignment")
+            return
+
+        if horizontal not in (LEFT, CENTER_H, RIGHT):
+            print("Invalid horizontal alignment")
+            return
+
+        # Validate packet length
+        if len(data) != 4 + text_length:
+            print("Invalid text length")
+            return
+
+        # Extract UTF-8 text
+        text = data[4:].decode("utf-8")
+
+        # Draw
+        await draw_text(text, vertical, horizontal)
+
+        print("Text:", text)
+        print("Position:", vertical, horizontal)
+
+    except Exception as e:
+        print("Packet error:", e)
 
 
 async def write_handler():
@@ -97,15 +178,16 @@ async def write_handler():
             continue
 
         try:
-            await handle_write(connection, WRITE_TEXT_CHARACTERISTIC.read())
+
+            await handle_packet(WRITE_TEXT_CHARACTERISTIC.read())
 
         except Exception as e:
             print("Write Error:", e)
 
 
 async def init():
-    global oled
-    oled.fill(1)
+    oled.fill(0)
+    oled.text("App Running", 0, 0)
     oled.show()
 
 
@@ -121,8 +203,11 @@ async def RunBle():
 
 
 async def RunMultiply():
+    await init()
+
     tasks = [
-        asyncio.create_task(RunBle()), asyncio.create_task(init()), asyncio.create_task(write_handler())
+        asyncio.create_task(RunBle()),
+        asyncio.create_task(write_handler())
     ]
 
     await asyncio.gather(*tasks)
